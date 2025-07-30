@@ -1,2 +1,5 @@
-flask
+Flask
+python-dotenv
 openai
+werkzeug
+
