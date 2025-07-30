@@ -1,5 +1,5 @@
 Flask
-python-dotenv
 openai
-werkzeug
-
+pydub
+gunicorn
+python-dotenv
