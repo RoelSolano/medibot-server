@@ -19,6 +19,9 @@ os.makedirs(PREGRABADOS_FOLDER, exist_ok=True)
 os.makedirs(DINAMICOS_FOLDER, exist_ok=True)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# URL base (Render o local)
+BASE_URL = os.getenv("BASE_URL", "https://tu-servidor.onrender.com")
+
 # Cliente OpenAI
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -43,7 +46,7 @@ def play_audio():
         return jsonify({"error": "Archivo no encontrado"}), 404
 
     return jsonify({
-        "audio_url": f"/audio_pregrabado/{file}"
+        "audio_url": f"{BASE_URL}/audio_pregrabado/{file}"
     })
 
 @app.route("/audio_pregrabado/<filename>")
@@ -52,7 +55,8 @@ def serve_pregrabado(filename):
 
 @app.route("/audios_pregrabados")
 def listar_audios():
-    audios = sorted(os.listdir(PREGRABADOS_FOLDER))
+    # Filtrar archivos ocultos (ej. .DS_Store en macOS)
+    audios = sorted([f for f in os.listdir(PREGRABADOS_FOLDER) if not f.startswith('.')])
     return jsonify({"audios": audios})
 
 # ------------------------
@@ -61,13 +65,13 @@ def listar_audios():
 @app.route("/interpretar-sensores", methods=["POST"])
 def interpretar_sensores():
     try:
-        # Datos del ESP32-S3
-        temperatura = request.json.get("temperatura")
-        spo2 = request.json.get("spo2")
-        frecuencia_cardiaca = request.json.get("frecuencia_cardiaca")
-
-        if temperatura is None or spo2 is None or frecuencia_cardiaca is None:
-            return jsonify({"error": "Faltan datos de sensores"}), 400
+        # Validación de datos
+        try:
+            temperatura = float(request.json.get("temperatura"))
+            spo2 = float(request.json.get("spo2"))
+            frecuencia_cardiaca = float(request.json.get("frecuencia_cardiaca"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Datos inválidos, deben ser numéricos"}), 400
 
         # Prompt para GPT-4
         prompt = (
@@ -100,7 +104,7 @@ def interpretar_sensores():
 
         return jsonify({
             "analisis": respuesta_texto,
-            "audio_url": f"/audio_dinamico/{nombre_audio}"
+            "audio_url": f"{BASE_URL}/audio_dinamico/{nombre_audio}"
         })
 
     except Exception as e:
