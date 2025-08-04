@@ -10,8 +10,9 @@ import re
 from db import init_db, guardar_mensaje, obtener_historial, guardar_perfil, obtener_perfil
 init_db()
 
-# Configuración
+# Cargar variables de entorno
 load_dotenv()
+
 app = Flask(__name__)
 UPLOAD_FOLDER = "temp"
 AUDIO_FOLDER = "audio"
@@ -21,28 +22,22 @@ os.makedirs(AUDIO_FOLDER, exist_ok=True)
 # Cliente OpenAI
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ---------------------- FUNCIONES ----------------------
+# --------------------- FUNCIONES AUXILIARES ---------------------
 def detectar_perfil_desde_texto(texto):
     texto = texto.lower()
-    edad = None
-
-    # Detectar edad
-    edad_match = re.search(r"tengo\s+(\d{1,2})\s+años", texto)
-    if edad_match:
-        edad = int(edad_match.group(1))
-
-    if "niño" in texto or (edad and edad <= 12):
+    edad = re.findall(r"tengo (\d{1,2}) años", texto)
+    if "niño" in texto or (edad and int(edad[0]) <= 12):
         return "niño"
-    if "adulto mayor" in texto or "anciano" in texto or (edad and edad >= 60):
+    if "adulto mayor" in texto or "anciano" in texto or (edad and int(edad[0]) >= 60):
         return "adulto_mayor"
     return "general"
 
 def detectar_nombre(texto):
     texto = texto.lower()
     patrones = [
-        r"me llamo\s+([a-zA-Záéíóúñ]+)",
-        r"soy\s+([a-zA-Záéíóúñ]+)",
-        r"mi nombre es\s+([a-zA-Záéíóúñ]+)"
+        r"me llamo (\w+)",
+        r"soy (\w+)",
+        r"mi nombre es (\w+)"
     ]
     for patron in patrones:
         coincidencia = re.search(patron, texto)
@@ -58,7 +53,11 @@ def definir_comportamiento_perfil(perfil):
     else:
         return "Eres un asistente médico que da respuestas claras y responsables."
 
-# ---------------------- ENDPOINT PRINCIPAL ----------------------
+# --------------------- ENDPOINTS ---------------------
+@app.route("/")
+def home():
+    return "🩺 MediBot API está activo"
+
 @app.route("/transcribe", methods=["POST"])
 def transcribe_audio():
     if 'audio' not in request.files:
@@ -70,7 +69,7 @@ def transcribe_audio():
     audio.save(filepath)
 
     try:
-        # Transcripción de voz a texto
+        # 1. Transcripción con Whisper
         with open(filepath, "rb") as f:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -78,48 +77,48 @@ def transcribe_audio():
             )
         transcripcion = transcript.text
 
-        # Detectar nombre del usuario
+        # 2. Detectar nombre
         nombre = detectar_nombre(transcripcion)
         if not nombre:
             return jsonify({"error": "No se detectó el nombre del usuario. Por favor diga: 'Me llamo Juan'"}), 400
 
-        # Detectar perfil y guardar
+        # 3. Detectar perfil y guardar
         perfil_detectado = detectar_perfil_desde_texto(transcripcion)
         guardar_perfil(nombre, perfil_detectado)
         perfil = obtener_perfil(nombre)
 
-        # Definir comportamiento del asistente
+        # 4. Definir comportamiento
         comportamiento = definir_comportamiento_perfil(perfil)
 
-        # Crear historial
+        # 5. Recuperar historial
         historial = obtener_historial(nombre)
         messages = [{"role": "system", "content": comportamiento}]
         messages.extend(historial)
         messages.append({"role": "user", "content": transcripcion})
 
-        # Obtener respuesta de GPT
+        # 6. Generar respuesta con GPT-4
         chat_response = client.chat.completions.create(
             model="gpt-4",
             messages=messages
         )
         respuesta = chat_response.choices[0].message.content
 
-        # Guardar conversación
+        # Guardar en historial
         guardar_mensaje(nombre, "user", transcripcion)
         guardar_mensaje(nombre, "assistant", respuesta)
 
-        # Generar respuesta en WAV
-        audio_nombre = f"respuesta_{uuid.uuid4().hex}.wav"
+        # 7. Generar audio TTS
+        audio_nombre = f"respuesta_{uuid.uuid4().hex}.mp3"
         audio_path = os.path.join(AUDIO_FOLDER, audio_nombre)
-        tts = client.audio.speech.create(
-            model="tts-1",
-            voice="nova",
-            input=respuesta,
-            format="wav"  # <---- IMPORTANTE
-        )
-        tts.stream_to_file(audio_path)
 
-        # Respuesta JSON
+        tts = client.audio.speech.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            input=respuesta
+        )
+        with open(audio_path, "wb") as f:
+            f.write(tts.read())
+
         return jsonify({
             "usuario": nombre,
             "perfil": perfil,
@@ -131,8 +130,11 @@ def transcribe_audio():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ---------------------- ENDPOINT AUDIO ----------------------
 @app.route("/audio/<filename>")
 def serve_audio(filename):
     return send_from_directory(AUDIO_FOLDER, filename)
+
+# --------------------- MAIN ---------------------
+if __name__ == "__main__":
+    app.run(debug=True)
 
