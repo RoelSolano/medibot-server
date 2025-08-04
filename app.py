@@ -1,140 +1,117 @@
 from flask import Flask, request, jsonify, send_from_directory
 import openai
 import os
-from werkzeug.utils import secure_filename
-from dotenv import load_dotenv
 import uuid
-import re
+from dotenv import load_dotenv
 
-# DB
-from db import init_db, guardar_mensaje, obtener_historial, guardar_perfil, obtener_perfil
-init_db()
-
-# Cargar variables de entorno
+# ------------------------
+# CONFIGURACIÓN INICIAL
+# ------------------------
 load_dotenv()
-
 app = Flask(__name__)
+
+# Carpetas
+PREGRABADOS_FOLDER = "audios_pregrabados"
+DINAMICOS_FOLDER = "audios_dinamicos"
 UPLOAD_FOLDER = "temp"
-AUDIO_FOLDER = "audio"
+
+os.makedirs(PREGRABADOS_FOLDER, exist_ok=True)
+os.makedirs(DINAMICOS_FOLDER, exist_ok=True)
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(AUDIO_FOLDER, exist_ok=True)
 
 # Cliente OpenAI
 client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# --------------------- FUNCIONES AUXILIARES ---------------------
-def detectar_perfil_desde_texto(texto):
-    texto = texto.lower()
-    edad = re.findall(r"tengo (\d{1,2}) años", texto)
-    if "niño" in texto or (edad and int(edad[0]) <= 12):
-        return "niño"
-    if "adulto mayor" in texto or "anciano" in texto or (edad and int(edad[0]) >= 60):
-        return "adulto_mayor"
-    return "general"
-
-def detectar_nombre(texto):
-    texto = texto.lower()
-    patrones = [
-        r"me llamo (\w+)",
-        r"soy (\w+)",
-        r"mi nombre es (\w+)"
-    ]
-    for patron in patrones:
-        coincidencia = re.search(patron, texto)
-        if coincidencia:
-            return coincidencia.group(1).capitalize()
-    return None
-
-def definir_comportamiento_perfil(perfil):
-    if perfil == "niño":
-        return "Responde de forma sencilla y amigable, como si hablaras con un niño pequeño."
-    elif perfil == "adulto_mayor":
-        return "Usa un lenguaje claro, lento y empático, adaptado a adultos mayores."
-    else:
-        return "Eres un asistente médico que da respuestas claras y responsables."
-
-# --------------------- ENDPOINTS ---------------------
+# ------------------------
+# 1. Endpoint raíz
+# ------------------------
 @app.route("/")
 def home():
-    return "🩺 MediBot API está activo"
+    return "🩺 MediBot API funcionando"
 
-@app.route("/transcribe", methods=["POST"])
-def transcribe_audio():
-    if 'audio' not in request.files:
-        return jsonify({"error": "No se envió ningún archivo de audio"}), 400
+# ------------------------
+# 2. Reproducir audio pregrabado
+# ------------------------
+@app.route("/play-audio")
+def play_audio():
+    file = request.args.get("file")
+    if not file:
+        return jsonify({"error": "No se especificó el archivo"}), 400
 
-    audio = request.files['audio']
-    filename = secure_filename(audio.filename)
-    filepath = os.path.join(UPLOAD_FOLDER, filename)
-    audio.save(filepath)
+    audio_path = os.path.join(PREGRABADOS_FOLDER, file)
+    if not os.path.exists(audio_path):
+        return jsonify({"error": "Archivo no encontrado"}), 404
 
+    return jsonify({
+        "audio_url": f"/audio_pregrabado/{file}"
+    })
+
+@app.route("/audio_pregrabado/<filename>")
+def serve_pregrabado(filename):
+    return send_from_directory(PREGRABADOS_FOLDER, filename)
+
+@app.route("/audios_pregrabados")
+def listar_audios():
+    audios = sorted(os.listdir(PREGRABADOS_FOLDER))
+    return jsonify({"audios": audios})
+
+# ------------------------
+# 3. Interpretar datos de sensores con IA
+# ------------------------
+@app.route("/interpretar-sensores", methods=["POST"])
+def interpretar_sensores():
     try:
-        # 1. Transcripción con Whisper
-        with open(filepath, "rb") as f:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f
-            )
-        transcripcion = transcript.text
+        # Datos del ESP32-S3
+        temperatura = request.json.get("temperatura")
+        spo2 = request.json.get("spo2")
+        frecuencia_cardiaca = request.json.get("frecuencia_cardiaca")
 
-        # 2. Detectar nombre
-        nombre = detectar_nombre(transcripcion)
-        if not nombre:
-            return jsonify({"error": "No se detectó el nombre del usuario. Por favor diga: 'Me llamo Juan'"}), 400
+        if temperatura is None or spo2 is None or frecuencia_cardiaca is None:
+            return jsonify({"error": "Faltan datos de sensores"}), 400
 
-        # 3. Detectar perfil y guardar
-        perfil_detectado = detectar_perfil_desde_texto(transcripcion)
-        guardar_perfil(nombre, perfil_detectado)
-        perfil = obtener_perfil(nombre)
+        # Prompt para GPT-4
+        prompt = (
+            f"Analiza estos signos vitales:\n"
+            f"Temperatura: {temperatura} °C\n"
+            f"SpO2: {spo2} %\n"
+            f"Frecuencia cardiaca: {frecuencia_cardiaca} bpm\n"
+            "Da un diagnóstico breve y recomendaciones simples."
+        )
 
-        # 4. Definir comportamiento
-        comportamiento = definir_comportamiento_perfil(perfil)
-
-        # 5. Recuperar historial
-        historial = obtener_historial(nombre)
-        messages = [{"role": "system", "content": comportamiento}]
-        messages.extend(historial)
-        messages.append({"role": "user", "content": transcripcion})
-
-        # 6. Generar respuesta con GPT-4
         chat_response = client.chat.completions.create(
             model="gpt-4",
-            messages=messages
+            messages=[
+                {"role": "system", "content": "Eres un asistente médico claro y empático."},
+                {"role": "user", "content": prompt}
+            ]
         )
-        respuesta = chat_response.choices[0].message.content
+        respuesta_texto = chat_response.choices[0].message.content
 
-        # Guardar en historial
-        guardar_mensaje(nombre, "user", transcripcion)
-        guardar_mensaje(nombre, "assistant", respuesta)
-
-        # 7. Generar audio TTS
-        audio_nombre = f"respuesta_{uuid.uuid4().hex}.mp3"
-        audio_path = os.path.join(AUDIO_FOLDER, audio_nombre)
+        # Generar audio WAV
+        nombre_audio = f"analisis_{uuid.uuid4().hex}.wav"
+        ruta_audio = os.path.join(DINAMICOS_FOLDER, nombre_audio)
 
         tts = client.audio.speech.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
-            input=respuesta
+            input=respuesta_texto
         )
-        with open(audio_path, "wb") as f:
-            f.write(tts.read())
+        tts.stream_to_file(ruta_audio)
 
         return jsonify({
-            "usuario": nombre,
-            "perfil": perfil,
-            "transcripcion": transcripcion,
-            "respuesta": respuesta,
-            "audio_url": f"/audio/{audio_nombre}"
+            "analisis": respuesta_texto,
+            "audio_url": f"/audio_dinamico/{nombre_audio}"
         })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/audio/<filename>")
-def serve_audio(filename):
-    return send_from_directory(AUDIO_FOLDER, filename)
+@app.route("/audio_dinamico/<filename>")
+def serve_dinamico(filename):
+    return send_from_directory(DINAMICOS_FOLDER, filename)
 
-# --------------------- MAIN ---------------------
+# ------------------------
+# EJECUTAR APP
+# ------------------------
 if __name__ == "__main__":
     app.run(debug=True)
-
