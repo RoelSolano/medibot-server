@@ -1,9 +1,11 @@
 services:
   - type: web
-    name: medibot-api
-    runtime: python
-    buildCommand: ""  # O puedes omitirlo si no haces build extra
-    startCommand: "gunicorn app:app"
+    name: medibot-server
+    env: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: OPENAI_API_KEY
         sync: false
