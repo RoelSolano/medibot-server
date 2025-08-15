@@ -37,11 +37,11 @@ def hablar():
         return jsonify({"error": "Falta parámetro 'texto'"}), 400
 
     try:
+        # Streaming de audio con el nuevo SDK
         with client.audio.speech.with_streaming_response.create(
             model="gpt-4o-mini-tts",
             voice="alloy",
-            input=texto,
-            audio_format="mp3"
+            input=texto
         ) as response:
             def generate():
                 for chunk in response.iter_bytes():
@@ -79,3 +79,4 @@ def interpretar_sensores():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
